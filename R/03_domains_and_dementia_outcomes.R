@@ -1,0 +1,151 @@
+# ==============================================================================
+# 03_domains_and_dementia_outcomes.R
+#
+# Figure 3 + Tables S8-S16 (9 CASI domain event studies), Tables S23-S25 /
+# Figure S26 (CASI<86, CDR global, DSM-IV dementia), and Figure S27/S28
+# (CDR subdomains at the ">=1" dementia and ">0" MCI-or-dementia
+# thresholds). Same specification as the primary analysis; only the
+# outcome changes.
+#
+# CDR/DSM-IV coding matches the original Stata idiom `var > threshold &
+# var < 8`: under Stata's missing-value ordering this evaluates to FALSE
+# for missing values, so a missing CDR/DSM-IV code is treated as 0 ("no
+# diagnosis") rather than dropped -- these outcomes therefore run on the
+# full vaccinated cohort, not just visits with a completed evaluation.
+# CDR scores take half-point values (0.5 = questionable/MCI), so ">0" and
+# ">=1" are genuinely different thresholds: Table S24 (cdr_total_any) uses
+# ">0", ported exactly from analysis_Xi_1225.do line 1393/1401
+# (`gen cdr_total_any = cdr_total>0 & cdr_total<8`). For the CDR
+# SUBDOMAINS, the original code (lines 1442-1461, 1466-1484) only ever
+# builds two dichotomizations -- `cdr_X_any` (>0, same "any stage"
+# threshold as cdr_total_any) and `cdr_X_severe` (>1 & <5, i.e. CDR>=2,
+# moderate-to-severe) -- neither of which is ">=1" or maps cleanly onto
+# the S27/S28 captions ("indicating dementia" vs. "indicating MCI or
+# dementia"). Since CDR=1/2/3 is the standard clinical "dementia" cutoff
+# and CDR=0.5 is "questionable/MCI", S27 is reconstructed here as ">=1"
+# and S28 as ">0" to match those two captions directly; this is NOT a
+# literal port of cdr_X_severe (>1, which would exclude CDR=1 "mild
+# dementia" and so understates S27) -- flagged as an unresolved exact-code
+# gap, verify against the published Figure S27/S28 images directly.
+# ==============================================================================
+suppressPackageStartupMessages({ library(dplyr); library(purrr); library(ggplot2); library(patchwork) })
+source("R/01_event_study_utils.R")
+
+panel <- readRDS("data/analysis_panel.rds")
+
+cdr_domains <- c("memory", "orient", "judge", "comm", "home", "pers")
+
+primary <- panel %>%
+  filter(!is.na(zost1_date)) %>%
+  build_event_time("zost1_date") %>%
+  mutate(
+    dsmivd = as.integer(!is.na(dsmiv_dx) & dsmiv_dx %in% 1:6),
+    casi85 = as.integer(casi_total < 86),
+    cdr_total_any = as.integer(!is.na(cdr_total) & cdr_total > 0 & cdr_total < 8),
+    across(all_of(paste0("cdr_", cdr_domains)),
+           ~ as.integer(!is.na(.) & . >= 1 & . < 8), .names = "{.col}_any"),
+    across(all_of(paste0("cdr_", cdr_domains)),
+           ~ as.integer(!is.na(.) & . > 0 & . < 8), .names = "{.col}_0")
+  )
+
+# Table numbers match the current Supplement "Figures and Tables" captions:
+# Table S8 Short-Term Memory, S9 Orientation, S10 Long-Term Memory,
+# S11 Mental Manipulation, S12 Language, S13 Verbal Fluency, S14 Attention,
+# S15 Visual Construction, S16 Abstraction and Judgment.
+domain_outcomes <- c(casi_stm = "Short-Term Memory (Table S8)", casi_ori = "Orientation (Table S9)",
+                      casi_ltm = "Long-Term Memory (Table S10)", casi_mmc = "Mental Manipulation (Table S11)",
+                      casi_lang = "Language (Table S12)", casi_flu = "Verbal Fluency (Table S13)",
+                      casi_att = "Attention (Table S14)", casi_draw = "Visual Construction (Table S15)",
+                      casi_ataj = "Abstraction and Judgment (Table S16)")
+
+# Table S23 (CASI<86), Table S24 (CDR global dementia), Table S25 (DSM-IV
+# dementia); combined as Figure S26 ("Effect of ZVL vaccination on dementia
+# diagnoses").
+dementia_outcomes <- c(casi85 = "CASI Total Score < 86 (Table S23)",
+                        cdr_total_any = "CDR global dementia (Table S24)",
+                        dsmivd = "DSM-IV dementia diagnosis (Table S25)")
+
+cdr_sub_any <- setNames(paste0("cdr_", cdr_domains, "_any"),
+                         c("Memory","Orientation","Judgment and Problem Solving",
+                           "Community Affairs","Home and Hobbies","Personal Care"))
+cdr_sub_0 <- setNames(paste0("cdr_", cdr_domains, "_0"),
+                       c("Memory","Orientation","Judgment and Problem Solving",
+                         "Community Affairs","Home and Hobbies","Personal Care"))
+
+dir.create("output/tables", recursive = TRUE, showWarnings = FALSE)
+dir.create("output/figures", recursive = TRUE, showWarnings = FALSE)
+
+run_and_save <- function(outcome, label, data, file_prefix, fe = "subject + visit_year + visit_age") {
+  res <- run_event_study(data, outcome, fe = fe)
+  tbl <- es_table(res$mod)
+  readr::write_csv(tbl, sprintf("output/tables/%s_%s.csv", file_prefix, outcome))
+  list(outcome = outcome, label = label, n = nobs(res$mod),
+       pretrend_p = res$pretrend_p, tbl = tbl)
+}
+# casi85 (Table S23) and dsmivd (Table S25) are estimated with visit_type
+# added to the FE list -- ported exactly from the original
+# analysis_Xi_1225.do (absorb(subject visit_year visit_age visit_type) at
+# lines 1094/1285), unlike cdr_total_any (Table S24, absorb(...) with no
+# visit_type at line 1401) and the CASI domain subscores (Figure 3, no
+# visit_type either, per figures.R). Not a stylistic choice -- the three
+# dementia-outcome tables genuinely use two different FE specs in the
+# original code.
+fe_visit_type <- "subject + visit_year + visit_age + visit_type"
+# panel_grid() is defined in R/01_event_study_utils.R
+
+cat("=== Figure 3 / Tables S8-S16 (CASI domain subscores) ===\n")
+domain_table_num <- c(casi_stm = "S8", casi_ori = "S9", casi_ltm = "S10", casi_mmc = "S11",
+                       casi_lang = "S12", casi_flu = "S13", casi_att = "S14", casi_draw = "S15",
+                       casi_ataj = "S16")
+domain_res <- imap(domain_outcomes, function(label, outcome) {
+  run_and_save(outcome, label, primary %>% filter(!is.na(.data[[outcome]])),
+               sprintf("Table%s_domain", domain_table_num[[outcome]]))
+})
+
+for (nm in names(domain_res)) {
+  r <- domain_res[[nm]]
+  p2 <- r$tbl %>% filter(term == "trt_p1")
+  p12 <- r$tbl %>% filter(term == "trt_p6")
+  cat(sprintf("%-25s 2y=%.3f (p=%.3f)  12y=%.3f (p=%.3f)  pretrend p=%.3f  N=%d\n",
+              r$label, p2$estimate, p2$pvalue, p12$estimate, p12$pvalue, r$pretrend_p, r$n))
+}
+cat("paper: Orientation 2y=0.203(p=.015) 12y=0.970(p=.001); Short-Term Memory 2y=0.285(p=.001) 12y=0.914(p=.002)\n")
+
+p_fig3 <- panel_grid(domain_res, ytitle_fun = function(l) "Effect on CASI subscore", ncol = 3)
+ggsave("output/figures/Figure3_domains.png", p_fig3, width = 14, height = 12, dpi = 200)
+
+cat("\n=== Figure S26 / Tables S23-S25: dementia-diagnosis outcomes ===\n")
+dem_table_num <- c(casi85 = "S23", cdr_total_any = "S24", dsmivd = "S25")
+dem_res <- imap(dementia_outcomes, function(label, outcome) {
+  fe <- if (outcome %in% c("casi85", "dsmivd")) fe_visit_type else "subject + visit_year + visit_age"
+  run_and_save(outcome, label, primary %>% filter(!is.na(.data[[outcome]])),
+               sprintf("Table%s_dementia", dem_table_num[[outcome]]), fe = fe)
+})
+for (nm in names(dem_res)) {
+  r <- dem_res[[nm]]
+  p12 <- r$tbl %>% filter(term == "trt_p6")
+  cat(sprintf("%-40s 12y after: %.3f pp (p=%.3f)  N=%d\n", r$label, 100*p12$estimate, p12$pvalue, r$n))
+}
+cat("paper (abs. pp at max follow-up): CASI<86 -11.9 (p=.020); CDR global -10.4 (p=.025); DSM-IV -8.8 (p=.048)\n")
+cat("(ZVL effect is protective/negative on these harm-coded outcomes.)\n")
+
+p_figS26 <- panel_grid(dem_res, ytitle_fun = function(l) "Probability", ncol = 3, harm_coded = TRUE)
+ggsave("output/figures/FigureS26_dementia_outcomes.png", p_figS26, width = 14, height = 5, dpi = 200)
+
+cat("\n=== Figure S27: CDR subdomains indicating dementia (>=1) ===\n")
+cdr1_res <- imap(cdr_sub_any, function(outcome, label) {
+  run_and_save(outcome, label, primary %>% filter(!is.na(.data[[outcome]])), "TableS27_cdrsub_dementia")
+})
+p_figS27 <- panel_grid(cdr1_res, ytitle_fun = function(l) "Probability", ncol = 3, harm_coded = TRUE)
+ggsave("output/figures/FigureS27_cdr_subdomains_dementia.png", p_figS27, width = 14, height = 8, dpi = 200)
+
+cat("\n=== Figure S28: CDR subdomains indicating MCI or dementia (>0) ===\n")
+cdr0_res <- imap(cdr_sub_0, function(outcome, label) {
+  run_and_save(outcome, label, primary %>% filter(!is.na(.data[[outcome]])), "TableS28_cdrsub_mci")
+})
+p_figS28 <- panel_grid(cdr0_res, ytitle_fun = function(l) "Probability", ncol = 3, harm_coded = TRUE)
+ggsave("output/figures/FigureS28_cdr_subdomains_mci.png", p_figS28, width = 14, height = 8, dpi = 200)
+
+saveRDS(list(domain = domain_res, dementia = dem_res, cdr_any = cdr1_res, cdr_0 = cdr0_res),
+        "output/tables/domains_dementia_results.rds")
+cat("\nSaved all domain/dementia/CDR-subdomain result tables AND figures to output/\n")
